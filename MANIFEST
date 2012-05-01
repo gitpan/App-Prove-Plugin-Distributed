@@ -1,6 +1,5 @@
 Changes
 lib/App/Prove/Plugin/Distributed.pm
-lib/App/Prove/Plugin/Distributed.pm.orig
 lib/TAP/Parser/Iterator/Stream/Selectable.pm
 lib/TAP/Parser/Iterator/Worker.pm
 lib/TAP/Parser/Iterator/Worker/LSF.pm

@@ -5,12 +5,14 @@ use Getopt::Long;
 use Carp;
 use Test::More;
 use IO::Socket::INET;
+use Cwd;
+
 use Sys::Hostname;
 use constant LOCK_EX => 2;
 use constant LOCK_NB => 4;
 use File::Spec;
 
-use vars qw($VERSION @ISA);
+use vars (qw($VERSION @ISA));
 
 my $error = '';
 
@@ -20,11 +22,11 @@ App::Prove::Plugin::Distributed - to distribute test job using client and server
 
 =head1 VERSION
 
-Version 0.03
+Version 0.04
 
 =cut
 
-$VERSION = '0.03';
+$VERSION = '0.04';
 
 =head3 C<load>
 
@@ -117,7 +119,7 @@ sub load {
     }
 
     my $original_perl_5_lib = $ENV{PERL5LIB} || '';
-    my @original_include = @INC;
+    my @original_include = $class->extra_used_libs();
     if ( $app->{includes} ) {
         my @includes = split /:/, $original_perl_5_lib;
         unshift @includes, @original_include;
@@ -125,12 +127,11 @@ sub load {
         my %found;
         my @wanted;
         for my $include (@includes) {
-            unless ( $found{$include} ) {
+            unless ( $found{$include}++ ) {
                 push @wanted, $include;
             }
         }
         $ENV{PERL5LIB} = join ':', @wanted;
-        @INC = @wanted;
     }
 
     #LSF: Start up.
@@ -163,6 +164,66 @@ sub load {
     @INC = @original_include;
     return 1;
 }
+
+=head3 C<extra_used_libs>
+
+Return a list of paths in @INC that are not part of the compiled-in lsit of paths
+
+=cut
+
+my @initial_compiled_inc;
+BEGIN {
+    use Config;
+
+    my @var_list = (
+        'updatesarch', 'updateslib',
+        'archlib', 'privlib',
+        'sitearch', 'sitelib', 'sitelib_stem',
+        'vendorarch', 'vendorlib', 'vendorlib_stem',
+        'extrasarch', 'extraslib',
+    );
+
+    for my $var_name (@var_list) {
+        if ($var_name =~ /_stem$/ && $Config{$var_name}) {
+            my @stem_list = (split(' ', $Config{'inc_version_list'}), '');
+            push @initial_compiled_inc, map { $Config{$var_name} . "/$_" } @stem_list
+        } else {
+            push @initial_compiled_inc, $Config{$var_name} if $Config{$var_name};
+        }
+    }
+
+    # . is part of the initial @INC unless in taint mode
+    push @initial_compiled_inc, '.' if (${^TAINT} == 0);
+
+    map { s/\/+/\//g } @initial_compiled_inc;
+    map { s/\/+$// } @initial_compiled_inc;
+}
+
+
+sub extra_used_libs {
+    my $class = shift;
+
+    my @extra;
+    my @compiled_inc = @initial_compiled_inc;
+    my @perl5lib = split(':', $ENV{PERL5LIB});
+    map { $_ =~ s/\/+$// } (@compiled_inc, @perl5lib);   # remove trailing slashes
+    map { $_ = Cwd::abs_path($_) || $_ } (@compiled_inc, @perl5lib);
+    for my $inc (@INC) {
+        $inc =~ s/\/+$//;
+        my $abs_inc = Cwd::abs_path($inc) || $inc; # should already be expanded by UR.pm
+        next if (grep { $_ =~ /^$abs_inc$/ } @compiled_inc);
+        next if (grep { $_ =~ /^$abs_inc$/ } @perl5lib);
+        push @extra, $inc;
+    }
+
+    #unshift @extra, ($ENV{PERL_USED_ABOVE} ? split(":", $ENV{PERL_USED_ABOVE}) : ());
+
+    map { $_ =~ s/\/+$// } @extra;   # remove trailing slashes again
+    #@extra = _unique_elements(@extra);
+
+    return @extra;
+}
+
 
 =head3 C<start_server>
 
@@ -202,26 +263,28 @@ sub start_server {
         $builder->output($socket);
         $builder->failure_output($socket);
         $builder->todo_output($socket);
-        *STDERR = $socket;
-        *STDOUT = $socket;
         if ($detach) {
-            my $command = join ' ',
-              ( $job_info,
-                ( $app->{test_args} ? @{ $app->{test_args} } : () ) );
+            my @command = ( $job_info, ( $app->{test_args} ? @{ $app->{test_args} } : () ) );
             {
                 require TAP::Parser::Source;
                 require TAP::Parser::SourceHandler::Worker;
+                require TAP::Parser::SourceHandler::Perl;
                 my $source = TAP::Parser::Source->new();
                 $source->raw( \$job_info )->assemble_meta;
                 my $vote =
                   TAP::Parser::SourceHandler::Worker->can_handle($source);
-                if ( $vote >= 0.75 ) {
-                    $command = $^X . ' ' . $command;
+                if ( $vote > 0.25 ) {
+                    unshift @command, TAP::Parser::SourceHandler::Perl->get_perl();
                 }
-                print $socket `$command`;
+                open STDOUT, ">&", $socket;
+                open STDERR, ">&", $socket;
+                exec(@command)
+                    or print $socket "Error running command: $!\nCommand was: ",join(' ',@command),"\n";
             }
             exit;
         }
+        *STDERR     = $socket;
+        *STDOUT     = $socket;
         unless ( $class->_do( $job_info, $app->{test_args} ) ) {
             print $socket "$0\n$error\n\b";
             if ($error_log) {
