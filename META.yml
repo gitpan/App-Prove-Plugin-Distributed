@@ -1,5 +1,5 @@
 ---
-abstract: 'to distribute test job using client and server model.'
+abstract: 'an L<App::Prove> plugin to distribute test jobs using client and server model.'
 author:
   - 'Shin Leong <lsf@cpan.org>'
 build_requires:
@@ -26,4 +26,4 @@ requires:
   IO::Socket::INET: 0
   Sys::Hostname: 0
   Test::More: 0
-version: 0.04
+version: 0.05

@@ -1,5 +1,5 @@
 {
-   "abstract" : "to distribute test job using client and server model.",
+   "abstract" : "an L<App::Prove> plugin to distribute test jobs using client and server model.",
    "author" : [
       "Shin Leong <lsf@cpan.org>"
    ],
@@ -44,5 +44,5 @@
       }
    },
    "release_status" : "stable",
-   "version" : "0.04"
+   "version" : "0.05"
 }
