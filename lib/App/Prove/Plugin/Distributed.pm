@@ -22,11 +22,11 @@ App::Prove::Plugin::Distributed - an L<App::Prove> plugin to distribute test job
 
 =head1 VERSION
 
-Version 0.05
+Version 0.06
 
 =cut
 
-$VERSION = '0.05';
+$VERSION = '0.06';
 
 =head1 SYNOPSIS
 
@@ -37,7 +37,7 @@ $VERSION = '0.05';
   prove -PDistributed --distributed-type=LSF -j2 t/
 
   # Distributed jobs with SSH workers.
-  prove -PDistributed --distributed-type=SSH -j2 t/
+  prove -PDistributed --distributed-type=SSH -j2 --host=host1,host2 t/
   
   # Distributed jobs with PBS workers using L<PBS::Client>. Note: This is not tested yet.
   prove -PDistributed --distributed-type=PBS -j2 t/
@@ -167,6 +167,12 @@ sub load {
             }
         }
         $ENV{PERL5LIB} = join ':', @wanted;
+
+        #LSF:  Put the extra libraries to @INC.
+        %found = map { $_ => 1 } @INC;
+        for (@wanted) {
+            unshift @INC, $_ unless ( $found{$_} );
+        }
     }
 
     #LSF: Start up.
@@ -207,58 +213,60 @@ Return a list of paths in @INC that are not part of the compiled-in lsit of path
 =cut
 
 my @initial_compiled_inc;
+
 BEGIN {
     use Config;
 
     my @var_list = (
-        'updatesarch', 'updateslib',
-        'archlib', 'privlib',
-        'sitearch', 'sitelib', 'sitelib_stem',
-        'vendorarch', 'vendorlib', 'vendorlib_stem',
-        'extrasarch', 'extraslib',
+        'updatesarch', 'updateslib',     'archlib',      'privlib',
+        'sitearch',    'sitelib',        'sitelib_stem', 'vendorarch',
+        'vendorlib',   'vendorlib_stem', 'extrasarch',   'extraslib',
     );
 
     for my $var_name (@var_list) {
-        if ($var_name =~ /_stem$/ && $Config{$var_name}) {
-            my @stem_list = (split(' ', $Config{'inc_version_list'}), '');
-            push @initial_compiled_inc, map { $Config{$var_name} . "/$_" } @stem_list
-        } else {
-            push @initial_compiled_inc, $Config{$var_name} if $Config{$var_name};
+        if ( $var_name =~ /_stem$/ && $Config{$var_name} ) {
+            my @stem_list = ( split( ' ', $Config{'inc_version_list'} ), '' );
+            push @initial_compiled_inc,
+              map { $Config{$var_name} . "/$_" } @stem_list;
+        }
+        else {
+            push @initial_compiled_inc, $Config{$var_name}
+              if $Config{$var_name};
         }
     }
 
     # . is part of the initial @INC unless in taint mode
-    push @initial_compiled_inc, '.' if (${^TAINT} == 0);
+    push @initial_compiled_inc, '.' if ( ${^TAINT} == 0 );
 
     map { s/\/+/\//g } @initial_compiled_inc;
     map { s/\/+$// } @initial_compiled_inc;
 }
-
 
 sub extra_used_libs {
     my $class = shift;
 
     my @extra;
     my @compiled_inc = @initial_compiled_inc;
-    my @perl5lib = split(':', $ENV{PERL5LIB});
-    map { $_ =~ s/\/+$// } (@compiled_inc, @perl5lib);   # remove trailing slashes
-    map { $_ = Cwd::abs_path($_) || $_ } (@compiled_inc, @perl5lib);
+    my @perl5lib = split( ':', $ENV{PERL5LIB} );
+    map { $_ =~ s/\/+$// }
+      ( @compiled_inc, @perl5lib );    # remove trailing slashes
+    map { $_ = Cwd::abs_path($_) || $_ } ( @compiled_inc, @perl5lib );
     for my $inc (@INC) {
         $inc =~ s/\/+$//;
-        my $abs_inc = Cwd::abs_path($inc) || $inc; # should already be expanded by UR.pm
-        next if (grep { $_ =~ /^$abs_inc$/ } @compiled_inc);
-        next if (grep { $_ =~ /^$abs_inc$/ } @perl5lib);
+        my $abs_inc = Cwd::abs_path($inc)
+          || $inc;                     # should already be expanded by UR.pm
+        next if ( grep { $_ =~ /^$abs_inc$/ } @compiled_inc );
+        next if ( grep { $_ =~ /^$abs_inc$/ } @perl5lib );
         push @extra, $inc;
     }
 
-    #unshift @extra, ($ENV{PERL_USED_ABOVE} ? split(":", $ENV{PERL_USED_ABOVE}) : ());
+#unshift @extra, ($ENV{PERL_USED_ABOVE} ? split(":", $ENV{PERL_USED_ABOVE}) : ());
 
-    map { $_ =~ s/\/+$// } @extra;   # remove trailing slashes again
-    #@extra = _unique_elements(@extra);
+    map { $_ =~ s/\/+$// } @extra;     # remove trailing slashes again
+                                       #@extra = _unique_elements(@extra);
 
     return @extra;
 }
-
 
 =head3 C<start_server>
 
@@ -299,7 +307,9 @@ sub start_server {
         $builder->failure_output($socket);
         $builder->todo_output($socket);
         if ($detach) {
-            my @command = ( $job_info, ( $app->{test_args} ? @{ $app->{test_args} } : () ) );
+            my @command =
+              ( $job_info,
+                ( $app->{test_args} ? @{ $app->{test_args} } : () ) );
             {
                 require TAP::Parser::Source;
                 require TAP::Parser::SourceHandler::Worker;
@@ -309,42 +319,62 @@ sub start_server {
                 my $vote =
                   TAP::Parser::SourceHandler::Worker->can_handle($source);
                 if ( $vote > 0.25 ) {
-                    unshift @command, TAP::Parser::SourceHandler::Perl->get_perl();
+                    unshift @command,
+                      TAP::Parser::SourceHandler::Perl->get_perl();
                 }
                 open STDOUT, ">&", $socket;
                 open STDERR, ">&", $socket;
                 exec(@command)
-                    or print $socket "Error running command: $!\nCommand was: ",join(' ',@command),"\n";
+                  or print $socket "Error running command: $!\nCommand was: ",
+                  join( ' ', @command ), "\n";
             }
             exit;
         }
-        *STDERR     = $socket;
-        *STDOUT     = $socket;
+        *STDERR = $socket;
+        *STDOUT = $socket;
         unless ( $class->_do( $job_info, $app->{test_args} ) ) {
-            print $socket "$0\n$error\n\b";
+            my $server_spec = (
+                $socket->sockhost eq '0.0.0.0'
+                ? hostname
+                : $socket->sockhost
+              )
+              . ':'
+              . $socket->sockport;
+            print $socket (
+                '# ',
+                ( join "\n# ", ( "Worker: <$spec>", ( split /\n/, $error ) ) ),
+                "\n"
+            );
             if ($error_log) {
                 use IO::File;
                 my $fh = IO::File->new( "$error_log", 'a+' );
                 unless ( flock( $fh, LOCK_EX | LOCK_NB ) ) {
-                    warn
-"can't immediately write-lock the file ($!), blocking ...";
+                    warn "can't immediately write-lock ",
+                      "the file ($!), blocking ...";
                     unless ( flock( $fh, LOCK_EX ) ) {
                         die "can't get write-lock on numfile: $!";
                     }
                 }
-                my $server_spec = (
-                    $socket->sockhost eq '0.0.0.0'
-                    ? hostname
-                    : $socket->sockhost
-                  )
-                  . ':'
-                  . $socket->sockport;
-                print $fh
-"<< START $job_info >>\nSERVER: $server_spec\nPID: $$\nERROR: $error\n<< END $job_info >>\n\b";
+                print $fh (
+                    join "\n",
+                    (
+                        "<< START $job_info >>",
+                        "SERVER: $server_spec",
+                        "PID: $$",
+                        "ERROR: $error",
+                        "<< END $job_info >>"
+                    )
+                );
                 close $fh;
             }
         }
-        exit;
+
+        #LSF: How to exit with END block trigger.
+        &trigger_end_blocks_before_child_process_exit();
+
+        #LSF: Might not need this.
+        $socket->flush;
+        exit(0);
     }
     else {
         die "should not get here.\n";
@@ -357,8 +387,7 @@ sub _do {
     my $proto    = shift;
     my $job_info = shift;
     my $args     = shift;
-
-    my $cwd = File::Spec->rel2abs('.');
+    my $cwd      = File::Spec->rel2abs('.');
 
     #LSF: The code from here to exit is from  L<FCGI::Daemon> module.
     local *CORE::GLOBAL::exit = sub { die 'notr3a11yeXit' };
@@ -384,6 +413,30 @@ sub _do {
         }
     }
     return 1;
+}
+
+=head3 C<trigger_end_blocks_before_child_process_exit>
+
+Trigger END blocks before the child process exit.
+The main reason is to have the Test::Builder to have
+change to finish up.
+
+=cut
+
+sub trigger_end_blocks_before_child_process_exit {
+    my $original_pid;
+    if ( $Test::Builder::Test && $Test::Builder::Test->{Original_Pid} != $$ ) {
+        $original_pid = $Test::Builder::Test->{Original_Pid};
+        $Test::Builder::Test->{Original_Pid} = $$;
+    }
+    use B;
+    my @ENDS = B::end_av->ARRAY;
+    for my $END (@ENDS) {
+        $END->object_2svref->();
+    }
+    if ( $Test::Builder::Test && $original_pid ) {
+        $Test::Builder::Test->{Original_Pid} = $original_pid;
+    }
 }
 
 1;
@@ -435,6 +488,17 @@ job will be executed with C<exec> perl function.
 
 Each worker can have its specific options.  Please refer to the particular
 source handler worker module for detail.
+
+=head1 BUGS
+
+Currently, the only known bug is when running in the worker perl process 
+without using C<detach> option with the empty string regular expression match.
+Shown below is the example code that will generate the bug.  For more
+information please check out the test F<t/sample-tests/empty_string_problem>.
+
+    ok('good=bad' =~ m/^.*?=.*/, 'test');
+
+    ok('test' =~ m//, 'this will failed before the previous regex match with a "?=" regex match. I have no way to reset back the previous regex change the regex engine unless I put it in its scope.');
 
 =head1 AUTHORS
 
