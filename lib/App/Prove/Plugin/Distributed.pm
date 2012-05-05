@@ -22,14 +22,18 @@ App::Prove::Plugin::Distributed - an L<App::Prove> plugin to distribute test job
 
 =head1 VERSION
 
-Version 0.06
+Version 0.07
 
 =cut
 
-$VERSION = '0.06';
+$VERSION = '0.07';
 
 =head1 SYNOPSIS
 
+  # All of the examples below is loading tests into the worker perl processes
+  # If you want to run the tests in a separate perl process, you can specify
+  # the '--detach' option to accomplish that.
+  
   # Default workers with L<IPC::Open3> as worker processes.
   prove -PDistributed -j2 t/
 
@@ -37,10 +41,18 @@ $VERSION = '0.06';
   prove -PDistributed --distributed-type=LSF -j2 t/
 
   # Distributed jobs with SSH workers.
-  prove -PDistributed --distributed-type=SSH -j2 --host=host1,host2 t/
+  prove -PDistributed --distributed-type=SSH -j2 --hosts=host1,host2 t/
+
+  # If you are using home network that does not have name server setup,
+  # you can specify the option --use-local-public-ip
+  prove -PDistributed --distributed-type=SSH --use-local-public-ip -j2 --hosts=host1,host2 t/
   
   # Distributed jobs with PBS workers using L<PBS::Client>. Note: This is not tested yet.
   prove -PDistributed --distributed-type=PBS -j2 t/
+
+  # Distributed jobs with PBS workers using L<PBS::Client>. Note: This is not tested yet.
+  # With PBS option
+  prove -PDistributed --distributed-type=PBS --mem=200 -j2 t/
 
 =head1 DESCRIPTION
 
@@ -500,9 +512,90 @@ information please check out the test F<t/sample-tests/empty_string_problem>.
 
     ok('test' =~ m//, 'this will failed before the previous regex match with a "?=" regex match. I have no way to reset back the previous regex change the regex engine unless I put it in its scope.');
 
+=head1 CAVEAT
+
+If the plugin is used with a shared L<DBI> handle and without the C<detach> option,
+the database handle will be closed by the child process when the child process exits.
+
+Shown below is an example,
+
+   prove -PDistributed -j2 --start-up=InitShareDBI.pm t/
+   
+Shown below is the F<InitShareDBI.pm> codes.
+  
+   package InitShareDBI;
+
+   use strict;
+   use warnings;
+   use DBI;
+   
+   unless($InitShareDBI::dbh) {
+       $InitShareDBI::dbh = DBI->connect('dbi:mysql:test;mysql_socket=/tmp/mysql.sock', 'user', 'password', {PrintError => 1});
+   }
+   
+   sub dbh {
+       return $InitShareDBI::dbh;
+   }
+   
+   1;
+
+To get around the problem of database handle close.  Shown below is one of the solution.
+
+    $InitShareDBI::dbh->{InactiveDestroy} = 1;
+
+or,
+
+    {
+	no warnings 'redefine';
+	*DBI::db::DESTROY = sub {
+
+            # NO OP.
+	};
+    }
+
+The complete codes for the F<InitShareDBI.pm> file below.
+
+    package InitShareDBI;
+
+    use strict;
+    use warnings;
+    use DBI;
+
+    #LSF: This has to be loaded when loading this module.
+    unless ($InitShareDBI::dbh) {
+	$InitShareDBI::dbh =
+	  DBI->connect( 'dbi:mysql:database=test;host=127.0.0.1;port=3306',
+            'test', 'test', { PrintError => 1 } );
+	#LSF: This will prevent it to be destroy.
+	#$InitShareDBI::dbh->{InactiveDestroy} = 1;
+    }
+
+    {
+	no warnings 'redefine';
+	*DBI::db::DESTROY = sub {
+
+            # NO OP.
+	};
+    }
+
+    sub dbh {
+	return $InitShareDBI::dbh;
+    }
+
+    1;
+
+Please refer to "DBI, fork, and clone"  C<<http://www.perlmonks.org/?node_id=594175>>
+for more information on this.
+
 =head1 AUTHORS
 
 Shin Leong  C<< <lsf@cpan.org> >>
+
+=head1 CREDITS
+
+Many thanks to Anthony Brummett who has contributed ideas, code,
+and helped out on the module since it's initial release.
+See the github C<<https://github.com/shin82008/App-Prove-Plugin-Distributed>> for details.
 
 =head1 LICENCE AND COPYRIGHT
 

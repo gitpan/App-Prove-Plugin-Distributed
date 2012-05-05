@@ -31,8 +31,13 @@
          }
       },
       "runtime" : {
+         "recommends" : {
+            "Net::Address::IP::Local" : 0,
+            "Net::Ping" : 0,
+            "PBS::Client" : 0
+         },
          "requires" : {
-            "App::Prove" : "3.23",
+            "App::Prove" : "3.22",
             "Carp" : 0,
             "Cwd" : 0,
             "Getopt::Long" : 0,
@@ -44,5 +49,5 @@
       }
    },
    "release_status" : "stable",
-   "version" : "0.06"
+   "version" : "0.07"
 }
