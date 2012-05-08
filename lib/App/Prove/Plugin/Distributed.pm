@@ -22,11 +22,11 @@ App::Prove::Plugin::Distributed - an L<App::Prove> plugin to distribute test job
 
 =head1 VERSION
 
-Version 0.07
+Version 0.08
 
 =cut
 
-$VERSION = '0.07';
+$VERSION = '0.08';
 
 =head1 SYNOPSIS
 
@@ -87,7 +87,6 @@ sub load {
     my ( $class, $p ) = @_;
     my @args = @{ $p->{args} };
     my $app  = $p->{app_prove};
-
     {
         local @ARGV = @args;
 
@@ -103,6 +102,9 @@ sub load {
             'tear-down=s'        => \$app->{tear_down},
             'error-log=s'        => \$app->{error_log},
             'detach'             => \$app->{detach},
+            'sync-type=s'        => \$app->{sync_type},
+            'source-dir=s'       => \$app->{source_dir},
+            'destination-dir=s'  => \$app->{destination_dir},
         ) or croak('Unable to continue');
 
 #LSF: We pass the option to the source handler if the source handler want the options.
@@ -143,10 +145,39 @@ sub load {
           "$option_name=number_of_workers=" . $app->{jobs};
     }
 
-    for (qw(start_up tear_down error_log detach)) {
+    for (
+        qw(start_up tear_down error_log detach sync_type source_dir destination_dir)
+      )
+    {
         if ( $app->{$_} ) {
             unshift @{ $app->{argv} }, "$option_name=$_=" . $app->{$_};
         }
+    }
+
+    if ( $app->{sync_type} ) {
+
+        no warnings 'redefine';
+        #LSF: If we do rsync, that means we want to keep the switches unmodified.
+        *App::Prove::_get_lib = sub {
+            my $self = shift;
+            my @libs;
+            if ( $self->lib ) {
+                push @libs, 'lib';
+            }
+            if ( $self->blib ) {
+                push @libs, 'blib/lib', 'blib/arch';
+            }
+            if ( @{ $self->includes } ) {
+                push @libs, @{ $self->includes };
+            }
+
+            #LSF: Override the original not to do the abs path.
+            #@libs = map { File::Spec->rel2abs($_) } @libs;
+
+            # Huh?
+            return @libs ? \@libs : ();
+
+        };
     }
 
     unless ( $app->{manager} ) {
@@ -184,6 +215,20 @@ sub load {
         %found = map { $_ => 1 } @INC;
         for (@wanted) {
             unshift @INC, $_ unless ( $found{$_} );
+        }
+    }
+
+    #LSF: Sync test environment here.
+    if ( $app->{sync_type} ) {
+        my $method = $app->{sync_type} . '_test_env';
+        unless ( $class->can($method) ) {
+            die "not able to sync on the remote with type "
+              . $app->{sync_type}
+              . ".\nCurrently, only the rsync type is supported.\n";
+        }
+
+        unless ( $class->$method($app) ) {
+            die $error;
         }
     }
 
@@ -451,6 +496,47 @@ sub trigger_end_blocks_before_child_process_exit {
     }
 }
 
+=head3 C<rsync_test_env>
+
+Rsync test enviroment to the worker host.
+
+Parameters $app object
+Returns boolean
+
+=cut
+
+sub rsync_test_env {
+    my $proto   = shift;
+    my $app     = shift;
+    my $manager = $app->{manager};
+
+    my ( $host, $port ) = split /:/, $manager, 2;
+    my $dest = $app->{destination_dir};
+    unless ($dest) {
+        require File::Temp;
+        $dest = File::Temp::tempdir();
+    }
+
+    #LSF: Some system the rsync will not automatically using the current user.
+    #     Let get the user for rsync.
+    my $user = $ENV{USER};
+
+    my $source = $app->{source_dir};
+    require File::Rsync;
+    my $rsync = File::Rsync->new( { archive => 1, compress => 1 } );
+    $rsync->exec(
+        {
+            src => ( $user ? "$user\@" : '' ) . "$host:$source",
+            dest => "$dest",
+        }
+    ) or do { $error = "rsync failed\n$!"; return; };
+
+    #LSF: Let change directory to destination.
+    chdir "$dest";
+
+    return 1;
+}
+
 1;
 
 __END__
@@ -488,13 +574,51 @@ Currently, the tear-down option will not be run.
 
 =head4 error-log
 
-Capture any error from the worker.  The input is the file path that the
-worker can write to.
+Capture any error from the worker.  The error log file is the file path 
+that the worker can write to.
 
 =head4 detach
 
 Detach the executing of test from the worker process. Currently, the test
 job will be executed with C<exec> perl function.
+
+=head4 use-local-public-ip
+
+If you are using home network that does not have Domain Name System (DNS) 
+or name server setup, you can specify the option C<use-local-public-ip> to
+find out the local public ip address of your machine that you start the
+L<prove>.  This option is boolean option and does not take argument.
+
+=head4 sync-type
+
+To distribute your project/program files to the worker machine, you can use the
+C<sync-type> option.  Currently, it only supports C<rsync> type.
+
+Example,
+
+   prove -PDistributed --distributed-type=SSH --hosts="192.168.1.100,192.168.1.101"\
+    --sync-type=rsync --use-local-public-ip -I lib -j2 --detach --recurse
+
+=head4 source-dir
+
+Source project/program files that you want to distribute to the worker machine.
+If it is not specified, the current directory is assumed.
+
+   prove -PDistributed --distributed-type=SSH --hosts="192.168.1.100,192.168.1.101" \
+   --sync-type=rsync --use-local-public-ip --source-dir=/my/home/project \
+   -I lib -j2 --detach --recurse
+
+=head4 destination-dir
+
+Destination directory on the worker machine that you want the project/program
+files to distribute to.  If it is not specified, the system will use 
+L<File::Temp::tempdir> to create a directory to be distributed to.
+
+Example,
+
+   prove -PDistributed --distributed-type=SSH --hosts="192.168.1.100,192.168.1.101" \
+   --sync-type=rsync --use-local-public-ip --destination-dir=/my/worker/home/project \
+   -I lib -j2 --detach --recurse
 
 =head3 Worker Specific Options
 
@@ -510,7 +634,10 @@ information please check out the test F<t/sample-tests/empty_string_problem>.
 
     ok('good=bad' =~ m/^.*?=.*/, 'test');
 
-    ok('test' =~ m//, 'this will failed before the previous regex match with a "?=" regex match. I have no way to reset back the previous regex change the regex engine unless I put it in its scope.');
+    ok('test' =~ m//, 'this will failed before the previous regex match ' . 
+                      'with a "?=" regex match. I have no way to reset ' .
+		      'back the previous regex change the regex engine ' .
+		      'unless I put it in its scope.');
 
 =head1 CAVEAT
 

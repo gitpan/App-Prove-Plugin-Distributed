@@ -17,11 +17,11 @@ TAP::Parser::Iterator::Worker - Iterator for worker TAP sources
 
 =head1 VERSION
 
-Version 0.01
+Version 0.08
 
 =cut
 
-$VERSION = '0.01';
+$VERSION = '0.08';
 
 =head1 SYNOPSIS
 
@@ -38,13 +38,16 @@ Make a new worker.
 sub _initialize {
     my ( $self, $args ) = @_;
     return unless ( $args->{spec} );
-    $self->{spec}      = $args->{spec};
-    $self->{start_up}  = $args->{start_up};
-    $self->{tear_down} = $args->{tear_down};
-    $self->{error_log} = $args->{error_log};
-    $self->{switches}  = $args->{switches};
-    $self->{detach}    = $args->{detach};
-    $self->{test_args} = $args->{test_args};
+    $self->{spec}            = $args->{spec};
+    $self->{start_up}        = $args->{start_up};
+    $self->{tear_down}       = $args->{tear_down};
+    $self->{error_log}       = $args->{error_log};
+    $self->{switches}        = $args->{switches};
+    $self->{detach}          = $args->{detach};
+    $self->{test_args}       = $args->{test_args};
+    $self->{sync_type}       = $args->{sync_type};
+    $self->{source_dir}      = $args->{source_dir};
+    $self->{destination_dir} = $args->{destination_dir};
     return
       unless (
         $self->SUPER::_initialize(
@@ -75,10 +78,20 @@ sub initialize_worker_command {
         my $package = __PACKAGE__;
         $type =~ s/^$package//;
         $type =~ s/::/-/g;
+        if ( $self->{sync_type} && !$self->{source_dir} ) {
+            my $cwd = File::Spec->rel2abs('.');
+
+            #LSF: The trailing '/' must be there for source to prevent
+            #     creating the source directory at destination directory
+            $self->{source_dir} = $cwd . '/';
+        }
 
    #my $option_name = '--worker' . ( $type ? '-' . lc($type) : '' ) . '-option';
         my $option_name = '--worker-option';
-        for my $option (qw(start_up tear_down error_log detach)) {
+        for my $option (
+            qw(start_up tear_down error_log detach sync_type source_dir destination_dir)
+          )
+        {
             my $name = $option;
             $name =~ s/_/-/g;
             if ( $option eq 'detach' && $self->{$option} ) {
